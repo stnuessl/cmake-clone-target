@@ -79,33 +79,37 @@ function(clone_target ARG_NAME)
         ${ARGN}
     )
 
-    if (NOT DEFINED ARG_CC)
+    if (NOT DEFINED ARG_PRIMARY)
         message(
             FATAL_ERROR
             "${CMAKE_CURRENT_FUNCTION}: "
-            "variable CC not set - C compiler must be specified"
+            "variable PRIMARY not set - a target for cloning must be specified"
         )
     endif()
 
-    if (NOT DEFINED ARG_CXX)
-        message(
-            FATAL_ERROR
-            "${CMAKE_CURRENT_FUNCTION}: "
-            "variable CXX not set - C++ compiler must be specified"
-        )
+    if (DEFINED ARG_CC)
+        set(CT_C_COMPILER ${ARG_NAME}_CT_C_COMPILER)
+
+        find_program(${CT_C_COMPILER} ${ARG_CC} REQUIRED)
     endif()
 
-    if (NOT DEFINED ARG_LD)
+    if (DEFINED ARG_CXX)
+        set(CT_CXX_COMPILER ${ARG_NAME}_CT_CXX_COMPILER)
+
+        find_program(${CT_CXX_COMPILER} ${ARG_CXX} REQUIRED)
+    endif()
+
+    if (DEFINED ARG_LD)
+        set(CT_LINKER ${ARG_NAME}_CT_LINKER)
+
+        find_program(${CT_LINKER} ${ARG_LD} REQUIRED)
+    else()
         message(
             FATAL_ERROR
             "${CMAKE_CURRENT_FUNCTION}: "
             "variable LD not set - linker must be specified"
         )
     endif()
-
-    find_program(ARG_CC ${ARG_CC} REQUIRED)
-    find_program(ARG_CXX ${ARG_CXX} REQUIRED)
-    find_program(ARG_LD ${ARG_LD} REQUIRED)
 
     if (NOT DEFINED ARG_RESPONSE_FILE_FLAG)
         set(ARG_RESPONSE_FILE_FLAG "@")
@@ -115,13 +119,14 @@ function(clone_target ARG_NAME)
         set(ARG_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
     endif()
 
+
     set(OUTPUT_DIRECTORY ${ARG_OUTPUT_DIRECTORY}/${ARG_NAME})
 
     if (NOT DEFINED ARG_COMPILE_RULE)
         set(
             ARG_COMPILE_RULE 
             <COMPILER>
-            -MD 
+            -MMD 
             -MT <OBJECT>
             -MF <DEPFILE>
             <DEFINES>
@@ -239,11 +244,13 @@ function(clone_target ARG_NAME)
         string(TOLOWER ${SRC_EXT} SRC_EXT)
 
         if ("${SRC_EXT}" STREQUAL ".c")
-            set(COMPILER ${ARG_CC})
+            set(COMPILER_LAUNCHER ${PRIMARY_CC_LAUNCHER})
+            set(COMPILER ${${CT_C_COMPILER}})
             set(OBJ_EXT ${CMAKE_C_OUTPUT_EXTENSION})
             set(LANGUAGE_STANDARD_ARG ${ARG_C_STANDARD})
         elseif ("${SRC_EXT}" MATCHES "\.c(c|pp|xx)")
-            set(COMPILER ${ARG_CXX})
+            set(COMPILER_LAUNCHER ${PRIMARY_CXX_LAUNCHER})
+            set(COMPILER ${${CT_CXX_COMPILER}})
             set(OBJ_EXT ${CMAKE_CXX_OUTPUT_EXTENSION})
             set(LANGUAGE_STANDARD_ARG ${ARG_CXX_STANDARD})
         else()
@@ -254,52 +261,56 @@ function(clone_target ARG_NAME)
             )
         endif()
 
+        if (NOT COMPILER)
+            message(
+                FATAL_ERROR
+                "${CMAKE_CURRENT_FUNCTION}: "
+                "missing compiler for handling ${SRC_EXT} files"
+            )
+        endif()
+
         set(OBJ_FILE ${OBJ_DIR}/${SRC_STEM}${OBJ_EXT})
         set(DEP_FILE ${OBJ_DIR}/${SRC_STEM}.d)
 
         file(MAKE_DIRECTORY ${OBJ_DIR})
 
-        set(COMPILER_ARGS ${ARG_COMPILE_RULE})
+        # Use the compile rule to generate a compiler invocation command
+        set(COMPILER_INVOCATION ${ARG_COMPILE_RULE})
         
         list(
-            TRANSFORM COMPILER_ARGS 
+            TRANSFORM COMPILER_INVOCATION 
             REPLACE 
             "<COMPILER>" "${COMPILER_LAUNCHER};${COMPILER}"
         )
-        list(TRANSFORM COMPILER_ARGS REPLACE "<OBJECT>" "${OBJ_FILE}")
-        list(TRANSFORM COMPILER_ARGS REPLACE "<DEPFILE>" "${DEP_FILE}")
+        list(TRANSFORM COMPILER_INVOCATION REPLACE "<OBJECT>" "${OBJ_FILE}")
+        list(TRANSFORM COMPILER_INVOCATION REPLACE "<DEPFILE>" "${DEP_FILE}")
         list(
-            TRANSFORM COMPILER_ARGS 
+            TRANSFORM COMPILER_INVOCATION 
             REPLACE 
             "<DEFINES>" "${ARG_COMPILE_DEFINITIONS_ARGS}"
         )
         list(
-            TRANSFORM COMPILER_ARGS 
+            TRANSFORM COMPILER_INVOCATION 
             REPLACE 
             "<INCLUDES>" "${ARG_INCLUDE_FLAGS_ARGS}"
         )
 
         list(
-            TRANSFORM COMPILER_ARGS 
+            TRANSFORM COMPILER_INVOCATION 
             REPLACE 
             "<FLAGS>" "${LANGUAGE_STANDARD_ARG};${ARG_COMPILE_OPTIONS}"
         )
-        list(TRANSFORM COMPILER_ARGS REPLACE "<INPUT>" "${SRC_FILE}")
-
-        set(
-            COMPILER_INVOCATION 
-            ${COMPILER_ARGS}
-        )
+        list(TRANSFORM COMPILER_INVOCATION REPLACE "<INPUT>" "${SRC_FILE}")
 
         if (NOT SYSTEM_MAX_ARG_LENGTH)
             if (WIN32)
                 set(MAX_ARG_LENGTH 8190)
             else()
-                find_program(GETCONF getconf)
+                find_program(CT_GETCONF getconf)
                 
-                if (GETCONF)
+                if (CT_GETCONF)
                     execute_process(
-                        COMMAND ${GETCONF} ARG_MAX
+                        COMMAND ${CT_GETCONF} ARG_MAX
                         OUTPUT_VARIABLE MAX_ARG_LENGTH
                         OUTPUT_STRIP_TRAILING_WHITESPACE
                         COMMAND_ERROR_IS_FATAL ANY
@@ -320,19 +331,27 @@ function(clone_target ARG_NAME)
 
         string(LENGTH COMPILER_INVOCATION COMMAND_LENGTH)
 
-        # Use response file if  Max command-line length is exceeded
+        # Use response file if max command-line length is exceeded
         if (ARG_USE_RSP_FILE OR COMMAND_LENGTH GREATER SYSTEM_MAX_ARG_LENGTH)
             set(RSP_FILE ${OBJ_DIR}/${SRC_STEM}.rsp)
+    
+            set(COMPILER_ARGS ${COMPILER_INVOCATION})
+
+            if (COMPILER_LAUNCHER)
+                list(POP_FRONT COMPILER_ARGS)
+            endif()
+                
+            list(POP_FRONT COMPILER_ARGS)
 
             string(REPLACE ";" " " COMPILER_ARGS "${COMPILER_ARGS}")
 
             file(WRITE ${RSP_FILE} "${COMPILER_ARGS}")
 
             set(
-                COMPILER_INCOVATION
-                ${COMPILER_LAUNCHER}
-                ${COMPILER}
-                ${ARG_RESPONSE_FILE_FLAG}${RSP_FILE}
+                COMPILER_INVOCATION
+                "${COMPILER_LAUNCHER}"
+                "${COMPILER}"
+                "${ARG_RESPONSE_FILE_FLAG}${RSP_FILE}"
             )
         endif()
 
@@ -377,8 +396,10 @@ function(clone_target ARG_NAME)
         )
     endif()
 
+    unset(LINK_OBJECTS)
     unset(LINK_LIB_TARGETS)
-    unset(LINK_LIB_PATHS)
+    unset(LINK_ARGS_LIB_PATHS)
+    unset(LINK_ARGS_LIBS)
 
     foreach (LIB ${ARG_LINK_LIBRARIES})
         if (TARGET ${LIB})
@@ -390,26 +411,48 @@ function(clone_target ARG_NAME)
                 RUNTIME_OUTPUT_DIRECTORY
             )
 
-            list(APPEND LINK_LIB_PATHS -L${LIB_PATH})
-
             _get_target_property_detail(
-                LIB_NAME
+                LIB_TYPE
                 ${LIB}
-                OUTPUT_NAME
+                CT_TARGET_TYPE
             )
+            
+            if (NOT LIB_TYPE)
+                _get_target_property_detail(
+                    LIB_TYPE
+                    ${LIB}
+                    TYPE 
+                )
+            endif()
 
-            # Use '-rpath' to hint to the dynamic linker where shared libraries
-            # will be found.
-            # FIXME: Something like the property "TYPE" should be used instead,
-            #        but it is read only.
-            # FIXME: shared library file extension should be specifiable
-            if ("${LIB_NAME}" MATCHES ".*\.so")
+            if ("${LIB_TYPE}" STREQUAL "SHARED_LIBRARY")
+                # Use '-rpath' to hint to the dynamic linker where shared
+                # libraries will be found.
+                list(APPEND LINK_ARGS_LIBS -l${LIB})
+                list(APPEND LINK_ARGS_LIB_PATHS -L${LIB_PATH})
                 list(APPEND ARG_LINK_OPTIONS "-Wl,-rpath,${LIB_PATH}")
+            elseif ("${LIB_TYPE}" STREQUAL "OBJECT_LIBRARY")
+                _get_target_property_detail(
+                    LIB_OBJECTS
+                    ${LIB}
+                    CT_OBJECTS
+                )
+                
+                # FIXME: what if no objects are retrieveable?
+                # Looks like cmake prepends the objects of object libraries
+                # to the target's objects for the linker invocation.
+                # We implement the same behavior so that using the same
+                # toolchain for the clone as for the primary will result in 
+                # the same binaries.
+                list(APPEND LINK_OBJECTS ${LIB_OBJECTS})
+            else()
+                list(APPEND LINK_ARGS_LIBS -l${LIB})
+                list(APPEND LINK_ARGS_LIB_PATHS -L${LIB_PATH})
             endif()
         endif()
     endforeach()
 
-    list(TRANSFORM ARG_LINK_LIBRARIES PREPEND "-l")
+    list(APPEND LINK_OBJECTS ${OBJ_FILES})
 
     _get_target_property_detail(
         PRIMARY_LINK_DEPENDS
@@ -430,49 +473,49 @@ function(clone_target ARG_NAME)
         TYPE
     )
 
-    # FIXME: ARG_LINK_RULE handling
+    if ("${PRIMARY_TYPE}" STREQUAL "UTILITY")
+        _get_target_property_detail(
+            PRIMARY_TYPE
+            ${ARG_PRIMARY}
+            CUSTOM_TARGET_TYPE 
+        )
+    endif()
+
+
+    # Target type-specific adaptions
     if ("${PRIMARY_TYPE}" STREQUAL "EXECUTABLE")
         set(BIN_NAME ${ARG_NAME})
         set(BIN_FILE ${OUTPUT_DIRECTORY}/${BIN_NAME})
+
         set(
-            LINKER_INVOCATION
-            ${ARG_LD}
+            LINK_ARGS_OPTIONS
             ${ARG_LINK_OPTIONS}
             ${ARG_LINK_DIRECTORIES}
-            ${LINK_LIB_PATHS}
-            ${OBJ_FILES}
-            ${ARG_LINK_LIBRARIES}
-            -o ${BIN_FILE}
+            ${LINK_ARGS_LIB_PATHS}
         )
-
     elseif ("${PRIMARY_TYPE}" STREQUAL "OBJECT_LIBRARY")
+        # Object libraries are treated special.
+        set(BIN_NAME ${ARG_NAME}.tag)
+        set(BIN_FILE ${OUTPUT_DIRECTORY}/${BIN_NAME})
+        
+        set(ARG_LINK_RULE "${CMAKE_COMMAND}" -E touch "${BIN_FILE}")
     elseif ("${PRIMARY_TYPE}" STREQUAL "STATIC_LIBRARY")
-        set(BIN_NAME lib${ARG_NAME}.a)
+        set(BIN_NAME lib${ARG_NAME}${CMAKE_STATIC_LIBRARY_SUFFIX})
         set(BIN_FILE ${OUTPUT_DIRECTORY}/${BIN_NAME})
 
-        set(
-            LINKER_INVOCATION
-            ${ARG_LD}
-            ${ARG_LINK_OPTIONS}
-            ${BIN_FILE}
-            ${OBJ_FILES}
-        )
+        set(LINK_ARGS_OPTIONS ${ARG_LINK_OPTIONS})
     elseif ("${PRIMARY_TYPE}" STREQUAL "SHARED_LIBRARY")
-        set(BIN_NAME lib${ARG_NAME}.so)
+        set(BIN_NAME lib${ARG_NAME}${CMAKE_SHARED_LIBRARY_SUFFIX})
         set(BIN_FILE ${OUTPUT_DIRECTORY}/${BIN_NAME})
 
         set(
-            LINKER_INVOCATION
-            ${ARG_LD}
-            -fPIC
-            -shared
-            -Wl,-soname,${BIN_NAME}
+            LINK_ARGS_OPTIONS
+            -fPIC 
+            -shared 
+            -Wl,-soname,${BIN_NAME} 
             ${ARG_LINK_OPTIONS}
             ${ARG_LINK_DIRECTORIES}
-            ${LINK_LIB_PATHS}
-            ${OBJ_FILES}
-            ${ARG_LINK_LIBRARIES}
-            -o ${BIN_FILE}
+            ${LINK_ARGS_LIB_PATHS}
         )
     else()
         message(
@@ -482,15 +525,49 @@ function(clone_target ARG_NAME)
         )
     endif()
         
+    # Use the link rule to generate a linker invocation command
+    set(LINKER_INVOCATION ${ARG_LINK_RULE})
+
+    list(TRANSFORM LINKER_INVOCATION REPLACE "<LINKER>" "${${CT_LINKER}}")
+    list(TRANSFORM LINKER_INVOCATION REPLACE "<OPTIONS>" "${LINK_ARGS_OPTIONS}")
+    list(TRANSFORM LINKER_INVOCATION REPLACE "<OBJECTS>" "${LINK_OBJECTS}")
+    list(TRANSFORM LINKER_INVOCATION REPLACE "<LIBRARIES>" "${LINK_ARGS_LIBS}")
+    list(TRANSFORM LINKER_INVOCATION REPLACE "<OUTPUT>" "${BIN_FILE}")
+
+    string(LENGTH LINKER_INVOCATION COMMAND_LENGTH)
+
+    # Use response file if max command-line length is exceeded
+    if (ARG_USE_RSP_FILE OR COMMAND_LENGTH GREATER SYSTEM_MAX_ARG_LENGTH)
+        set(RSP_FILE ${OBJ_DIR}/${SRC_STEM}.rsp)
+        cmake_path(
+            REPLACE_EXTENSION 
+            BIN_FILE ".rsp" 
+            OUTPUT_VARIABLE RSP_FILE
+        )
+
+        set(LINKER_ARGS ${LINKER_INVOCATION})
+
+        list(POP_FRONT LINKER_ARGS)
+
+        string(REPLACE ";" " " LINKER_ARGS "${LINKER_ARGS}")
+
+        file(WRITE ${RSP_FILE} "${LINKER_ARGS}")
+
+        set(
+            LINKER_INVOCATION
+            "${${CT_LINKER}}"
+            "${ARG_RESPONSE_FILE_FLAG}${RSP_FILE}"
+        )
+    endif()
 
     add_custom_command(
         OUTPUT ${BIN_FILE}
         COMMAND ${LINKER_INVOCATION}
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
         JOB_POOL ${PRIMARY_JOB_POOL_LINK} 
-        DEPENDS ${OBJ_FILES} 
-                ${PRIMARY_LINK_DEPENDS} 
+        DEPENDS ${LINK_OBJECTS}
                 ${LINK_LIB_TARGETS}
+                ${PRIMARY_LINK_DEPENDS} 
         COMMAND_EXPAND_LISTS
         VERBATIM
     )
@@ -501,41 +578,32 @@ function(clone_target ARG_NAME)
 
     add_custom_target(${ARG_NAME} ${TARGET_ALL_FLAG} DEPENDS ${BIN_FILE})
 
-    # Define custom properties for cloned targets
-    if (NOT CLONE_TARGET_PROPERTIES_DEFINED)
-        define_property(TARGET PROPERTY OBJECTS)
-        define_property(TARGET PROPERTY DEPENDENCY_FILES)
-
-        set(
-            CLONE_TARGET_PROPERTIES_DEFINED 1
-            CACHE 
-            INTERNAL 
-            "Additional properties for cloned targets defined"
-        )
-    endif()
-
     set_target_properties(
         ${ARG_NAME}
         PROPERTIES
         COMPILE_DEFINITIONS "${ARG_COMPILE_DEFINITIONS_ARGS}"
         COMPILE_OPTIONS "${ARG_COMPILE_OPTIONS}"
+        CXX_COMPILER_LAUNCHER "${PRIMARY_CXX_LAUNCHER}"
         CXX_STANDARD "${ARG_CXX_STANDARD}"
+        C_COMPILER_LAUNCHER "${PRIMARY_CC_LAUNCHER}"
         C_STANDARD "${ARG_C_STANDARD}"
+        EXCLUDE_FROM_ALL "${ARG_EXCLUDE_FROM_ALL}"
         INCLUDE_DIRECTORIES "${ARG_INCLUDE_FLAGS_ARGS}"
+        JOB_POOL_COMPILE "${PRIMARY_JOB_POOL_COMPILE}"
+        JOB_POOL_LINK "${PRIMARY_JOB_POOL_LINK}"
         LINK_DEPENDS "${PRIMARY_LINK_DEPENDS}"
         LINK_LIBRARIES "${ARG_LINK_LIBRARIES}"
         LINK_OPTIONS "${ARG_LINK_OPTIONS}"
         OUTPUT_NAME "${BIN_NAME}"
         RUNTIME_OUTPUT_DIRECTORY "${OUTPUT_DIRECTORY}"
         SOURCES "${PRIMARY_SOURCES}"
-        JOB_POOL_LINK "${PRIMARY_JOB_POOL_LINK}"
-        JOB_POOL_COMPILE "${PRIMARY_JOB_POOL_COMPILE}"
-        EXCLUDE_FROM_ALL "${ARG_EXCLUDE_FROM_ALL}"
-        OBJECTS "${OBJ_FILES}"
-        DEPENDENCY_FILES "${DEP_FILES}"
+
+        # Cloned target-specific properties
+        CT_PRIMARY_NAME "${ARG_PRIMARY}"
+        CT_TARGET_TYPE "${PRIMARY_TYPE}"
+        CT_OBJECTS "${OBJ_FILES}"
+        CT_DEPENDENCY_FILES "${DEP_FILES}"
     )
 
 endfunction()
-
-
 

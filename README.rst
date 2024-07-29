@@ -4,6 +4,11 @@ clone_target - cmake utility function
 
 Work in Progress; project is still in prototype phase.
 
+.. contents::
+    :backlinks: top
+    :depth: 2
+    
+
 Motivation
 ==========
 
@@ -59,4 +64,30 @@ Example
          CXX ${EMBEDDED_CXX_COMPILER}
          LD ${EMBEDDED_CXX_COMPILER}
     )
-        
+
+Features
+========
+
+* Works on executables, shared, static and object libraries.
+* Use of response files for tool invocations exceeding the systems maximum
+  command-line length.
+* Use of compiler launchers like `ccache <https://ccache.dev/>`_.
+
+Limitations
+===========
+
+The **clone_target** function is only supposed dto be used in conjunction 
+with C and/or C++ targets.
+
+Documentation
+=============
+
+
+Arguments
+---------
+
+PRIMARY
+CC
+CXX
+LD
+LINK_LIBRARIES
